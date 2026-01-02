@@ -147,14 +147,71 @@ func (i *Implementation) Execute(
 	rvalue unsafe.Pointer,
 	avalue []unsafe.Pointer,
 ) error {
-	// Prepare register arguments following AAPCS64
+	// Prepare arguments following AAPCS64
 	// X0-X7: 8 integer/pointer registers
 	// D0-D7: 8 floating-point registers
-	var gpr [8]uintptr
+	// Stack: a9-a15 (7 slots)
+	var gpr [15]uintptr
 	var fpr [8]uint64
 
 	gprIdx := 0
 	fprIdx := 0
+	stackIdx := 0
+
+	const maxStackArgs = 7
+
+	addStack := func(v uint64) bool {
+		if stackIdx >= maxStackArgs {
+			return false
+		}
+		gpr[8+stackIdx] = uintptr(v)
+		stackIdx++
+		return true
+	}
+
+	addInt := func(v uint64) bool {
+		if gprIdx < 8 {
+			gpr[gprIdx] = uintptr(v)
+			gprIdx++
+			return true
+		}
+		return addStack(v)
+	}
+
+	addFloat := func(v uint64) bool {
+		if fprIdx < 8 {
+			fpr[fprIdx] = v
+			fprIdx++
+			return true
+		}
+		return addStack(v)
+	}
+
+	addIntReg := func(v uint64) bool {
+		if gprIdx >= 8 {
+			return false
+		}
+		gpr[gprIdx] = uintptr(v)
+		gprIdx++
+		return true
+	}
+
+	addFloatReg := func(v uint64) bool {
+		if fprIdx >= 8 {
+			return false
+		}
+		fpr[fprIdx] = v
+		fprIdx++
+		return true
+	}
+
+	addIntStack := func(v uint64) bool {
+		return addStack(v)
+	}
+
+	addFloatStack := func(v uint64) bool {
+		return addStack(v)
+	}
 
 	// Map arguments to registers
 	for idx, argType := range cif.ArgTypes {
@@ -164,61 +221,50 @@ func (i *Implementation) Execute(
 
 		switch argType.Kind {
 		case types.FloatType:
-			if fprIdx < 8 {
-				bits := math.Float32bits(*(*float32)(avalue[idx]))
-				fpr[fprIdx] = uint64(bits) // stored in low 32 bits
-				fprIdx++
+			bits := math.Float32bits(*(*float32)(avalue[idx]))
+			if !addFloat(uint64(bits)) {
+				return types.ErrTooManyArguments
 			}
 		case types.DoubleType:
-			if fprIdx < 8 {
-				bits := math.Float64bits(*(*float64)(avalue[idx]))
-				fpr[fprIdx] = bits
-				fprIdx++
+			bits := math.Float64bits(*(*float64)(avalue[idx]))
+			if !addFloat(bits) {
+				return types.ErrTooManyArguments
 			}
 		case types.PointerType:
-			if gprIdx < 8 {
-				gpr[gprIdx] = *(*uintptr)(avalue[idx])
-				gprIdx++
+			if !addInt(uint64(*(*uintptr)(avalue[idx]))) {
+				return types.ErrTooManyArguments
 			}
 		case types.SInt8Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(int64(*(*int8)(avalue[idx])))
-				gprIdx++
+			if !addInt(uint64(int64(*(*int8)(avalue[idx])))) {
+				return types.ErrTooManyArguments
 			}
 		case types.UInt8Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(*(*uint8)(avalue[idx]))
-				gprIdx++
+			if !addInt(uint64(*(*uint8)(avalue[idx]))) {
+				return types.ErrTooManyArguments
 			}
 		case types.SInt16Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(int64(*(*int16)(avalue[idx])))
-				gprIdx++
+			if !addInt(uint64(int64(*(*int16)(avalue[idx])))) {
+				return types.ErrTooManyArguments
 			}
 		case types.UInt16Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(*(*uint16)(avalue[idx]))
-				gprIdx++
+			if !addInt(uint64(*(*uint16)(avalue[idx]))) {
+				return types.ErrTooManyArguments
 			}
 		case types.SInt32Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(int64(*(*int32)(avalue[idx])))
-				gprIdx++
+			if !addInt(uint64(int64(*(*int32)(avalue[idx])))) {
+				return types.ErrTooManyArguments
 			}
 		case types.UInt32Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(*(*uint32)(avalue[idx]))
-				gprIdx++
+			if !addInt(uint64(*(*uint32)(avalue[idx]))) {
+				return types.ErrTooManyArguments
 			}
 		case types.SInt64Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(*(*int64)(avalue[idx]))
-				gprIdx++
+			if !addInt(uint64(*(*int64)(avalue[idx]))) {
+				return types.ErrTooManyArguments
 			}
 		case types.UInt64Type:
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(*(*uint64)(avalue[idx]))
-				gprIdx++
+			if !addInt(*(*uint64)(avalue[idx])) {
+				return types.ErrTooManyArguments
 			}
 		case types.StructType:
 			// AAPCS64:
@@ -228,71 +274,43 @@ func (i *Implementation) Execute(
 			ensureStructLayout(argType)
 
 			isHFA, hfaCount, _ := isHomogeneousFloatAggregate(argType)
-			if isHFA && hfaCount > 0 && hfaCount <= 4 && fprIdx+hfaCount <= 8 {
-				ok := placeStructRegisters(
-					avalue[idx],
-					argType,
-					func(v uint64) bool {
-						if gprIdx >= 8 {
-							return false
-						}
-						gpr[gprIdx] = uintptr(v)
-						gprIdx++
-						return true
-					},
-					func(v uint64) bool {
-						if fprIdx >= 8 {
-							return false
-						}
-						fpr[fprIdx] = v
-						fprIdx++
-						return true
-					},
-				)
+			if isHFA && hfaCount > 0 && hfaCount <= 4 {
+				if fprIdx+hfaCount <= 8 {
+					ok := placeStructRegisters(avalue[idx], argType, addIntReg, addFloatReg)
+					if ok {
+						break
+					}
+				}
+				ok := placeStructRegisters(avalue[idx], argType, addIntStack, addFloatStack)
 				if ok {
 					break
 				}
+				return types.ErrTooManyArguments
 			}
 
 			if argType.Size <= 16 {
 				intCount, floatCount := countStructRegUsage(argType)
 				if gprIdx+intCount <= 8 && fprIdx+floatCount <= 8 {
-					ok := placeStructRegisters(
-						avalue[idx],
-						argType,
-						func(v uint64) bool {
-							if gprIdx >= 8 {
-								return false
-							}
-							gpr[gprIdx] = uintptr(v)
-							gprIdx++
-							return true
-						},
-						func(v uint64) bool {
-							if fprIdx >= 8 {
-								return false
-							}
-							fpr[fprIdx] = v
-							fprIdx++
-							return true
-						},
-					)
+					ok := placeStructRegisters(avalue[idx], argType, addIntReg, addFloatReg)
 					if ok {
 						break
 					}
 				}
+				ok := placeStructRegisters(avalue[idx], argType, addIntStack, addFloatStack)
+				if ok {
+					break
+				}
+				return types.ErrTooManyArguments
 			}
 
 			// Fallback: pass by reference.
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(avalue[idx])
-				gprIdx++
+			if !addInt(uint64(uintptr(avalue[idx]))) {
+				return types.ErrTooManyArguments
 			}
 		default:
 			// For unknown types, pass as pointer
-			if gprIdx < 8 {
-				gpr[gprIdx] = uintptr(avalue[idx])
-				gprIdx++
+			if !addInt(uint64(uintptr(avalue[idx]))) {
+				return types.ErrTooManyArguments
 			}
 		}
 	}
@@ -305,7 +323,7 @@ func (i *Implementation) Execute(
 	}
 
 	// Call via our ARM64 syscall wrapper
-	ret1, ret2, fret := gosyscall.Call8Float(uintptr(fn), gpr, fpr, r8)
+	ret1, ret2, fret := gosyscall.Call15Float(uintptr(fn), gpr, fpr, r8)
 
 	// Handle return value based on type
 	return i.handleReturn(cif, rvalue, uint64(ret1), uint64(ret2), fret)

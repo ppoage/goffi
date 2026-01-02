@@ -18,10 +18,20 @@ type abiCapture struct {
 	X8  uintptr
 }
 
+type abiStackCapture struct {
+	GPR   [8]uintptr
+	Stack [7]uintptr
+	FPR   [8]uint64
+	X8    uintptr
+}
+
 // captureABI is implemented in abi_capture_test.s.
 //
 //go:noescape
 func captureABI(out *abiCapture)
+
+// captureStackCABI0 is implemented in abi_capture_test.s and holds the raw entry point.
+var captureStackCABI0 uintptr
 
 func captureCall(t *testing.T, argTypes []*types.TypeDescriptor, args []unsafe.Pointer) abiCapture {
 	t.Helper()
@@ -40,6 +50,33 @@ func captureCall(t *testing.T, argTypes []*types.TypeDescriptor, args []unsafe.P
 	fnPtr := unsafe.Pointer(reflect.ValueOf(captureABI).Pointer())
 	if fnPtr == nil {
 		t.Fatalf("captureABI pointer is nil")
+	}
+
+	var impl Implementation
+	if err := impl.Execute(cif, fnPtr, nil, args); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	return out
+}
+
+func captureStackCall(t *testing.T, argTypes []*types.TypeDescriptor, args []unsafe.Pointer) abiStackCapture {
+	t.Helper()
+	var out abiStackCapture
+
+	argTypes = append([]*types.TypeDescriptor{types.PointerTypeDescriptor}, argTypes...)
+	outPtr := uintptr(unsafe.Pointer(&out))
+	args = append([]unsafe.Pointer{unsafe.Pointer(&outPtr)}, args...)
+
+	cif := &types.CallInterface{
+		ArgCount:   len(argTypes),
+		ArgTypes:   argTypes,
+		ReturnType: types.VoidTypeDescriptor,
+	}
+
+	fnPtr := unsafe.Pointer(captureStackCABI0)
+	if fnPtr == nil {
+		t.Fatalf("captureStackCABI0 pointer is nil")
 	}
 
 	var impl Implementation
@@ -225,5 +262,44 @@ func TestExecuteCaptureStructByRefLarge(t *testing.T) {
 		if out.GPR[1] != uintptr(unsafe.Pointer(&val)) {
 			t.Fatalf("by-ref GPR mismatch: 0x%x, want 0x%x", out.GPR[1], uintptr(unsafe.Pointer(&val)))
 		}
+	}
+}
+
+func TestExecuteCaptureStackArgs(t *testing.T) {
+	values := []uint64{
+		0x1111111122222222,
+		0x3333333344444444,
+		0x5555555566666666,
+		0x7777777788888888,
+		0x99999999aaaaaaaa,
+		0xbbbbbbbbcccccccc,
+		0xddddddddeeeeeeee,
+		0x0123456789abcdef,
+		0xfedcba9876543210,
+		0x0f0f0f0f0f0f0f0f,
+		0x1f1f1f1f1f1f1f1f,
+	}
+
+	argTypes := make([]*types.TypeDescriptor, 0, len(values))
+	args := make([]unsafe.Pointer, 0, len(values))
+	for i := range values {
+		argTypes = append(argTypes, types.UInt64TypeDescriptor)
+		args = append(args, unsafe.Pointer(&values[i]))
+	}
+
+	out := captureStackCall(t, argTypes, args)
+
+	for i := 0; i < 7; i++ {
+		if out.GPR[i+1] != uintptr(values[i]) {
+			t.Fatalf("GPR[%d] = 0x%x, want 0x%x", i+1, out.GPR[i+1], values[i])
+		}
+	}
+	if out.Stack[0] != uintptr(values[7]) ||
+		out.Stack[1] != uintptr(values[8]) ||
+		out.Stack[2] != uintptr(values[9]) ||
+		out.Stack[3] != uintptr(values[10]) {
+		t.Fatalf("stack args = [0x%x 0x%x 0x%x 0x%x], want [0x%x 0x%x 0x%x 0x%x]",
+			out.Stack[0], out.Stack[1], out.Stack[2], out.Stack[3],
+			values[7], values[8], values[9], values[10])
 	}
 }

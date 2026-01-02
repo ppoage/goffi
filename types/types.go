@@ -133,4 +133,5 @@ var (
 	ErrUnsupportedCallingConvention = errors.New("unsupported calling convention")
 	ErrInvalidTypeDefinition        = errors.New("invalid type definition")
 	ErrUnsupportedReturnType        = errors.New("unsupported return type")
+	ErrTooManyArguments             = errors.New("too many arguments for calling convention")
 )
