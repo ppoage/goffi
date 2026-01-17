@@ -155,7 +155,7 @@ func classifyArgumentARM64(t *types.TypeDescriptor, abi types.CallingConvention)
 		if isHFA && hfaCount <= 4 {
 			res.FPRCount = hfaCount
 		} else if t.Size > 16 {
-			// Non-HFA larger than 16 bytes: passed by reference
+			// Non-HFA larger than 16 bytes: passed by reference (pointer).
 			res.GPRCount = 1
 		} else {
 			// Non-HFA up to 16 bytes: mixed int/float register usage

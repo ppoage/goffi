@@ -82,3 +82,25 @@ TEXT ·captureStackC(SB), NOSPLIT|NOFRAME, $0-8
 // captureStackCABI0 exposes the raw entry point for captureStackC.
 GLOBL ·captureStackCABI0(SB), NOPTR|RODATA, $8
 DATA ·captureStackCABI0(SB)/8, $·captureStackC(SB)
+
+// returnFloat32 returns the input float32 argument unmodified.
+TEXT ·returnFloat32(SB), NOSPLIT|NOFRAME, $0-8
+	RET
+
+// returnFloat64 returns the input float64 argument unmodified.
+TEXT ·returnFloat64(SB), NOSPLIT|NOFRAME, $0-8
+	RET
+
+// returnVec4 returns the input Vec4 (HFA) argument unmodified.
+TEXT ·returnVec4(SB), NOSPLIT|NOFRAME, $0-8
+	RET
+
+// Raw entry points for ABI0 calls.
+GLOBL ·returnFloat32ABI0(SB), NOPTR|RODATA, $8
+DATA ·returnFloat32ABI0(SB)/8, $·returnFloat32(SB)
+
+GLOBL ·returnFloat64ABI0(SB), NOPTR|RODATA, $8
+DATA ·returnFloat64ABI0(SB)/8, $·returnFloat64(SB)
+
+GLOBL ·returnVec4ABI0(SB), NOPTR|RODATA, $8
+DATA ·returnVec4ABI0(SB)/8, $·returnVec4(SB)

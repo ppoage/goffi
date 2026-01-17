@@ -33,6 +33,16 @@ func captureABI(out *abiCapture)
 // captureStackCABI0 is implemented in abi_capture_test.s and holds the raw entry point.
 var captureStackCABI0 uintptr
 
+// returnFloat32ABI0/returnFloat64ABI0/returnVec4ABI0 are implemented in abi_capture_test.s.
+var returnFloat32ABI0 uintptr
+var returnFloat64ABI0 uintptr
+var returnVec4ABI0 uintptr
+
+func prepareReturnCIF(cif *types.CallInterface) {
+	cif.Convention = types.UnixCallingConvention
+	cif.Flags = classifyReturnARM64(cif.ReturnType, cif.Convention)
+}
+
 func captureCall(t *testing.T, argTypes []*types.TypeDescriptor, args []unsafe.Pointer) abiCapture {
 	t.Helper()
 	var out abiCapture
@@ -259,8 +269,11 @@ func TestExecuteCaptureStructByRefLarge(t *testing.T) {
 			[]unsafe.Pointer{unsafe.Pointer(&val)},
 		)
 
-		if out.GPR[1] != uintptr(unsafe.Pointer(&val)) {
-			t.Fatalf("by-ref GPR mismatch: 0x%x, want 0x%x", out.GPR[1], uintptr(unsafe.Pointer(&val)))
+		if out.GPR[1] == 0 {
+			t.Fatalf("by-ref GPR is zero")
+		}
+		if out.GPR[1] == uintptr(unsafe.Pointer(&val)) {
+			t.Fatalf("expected by-ref copy pointer, got original: 0x%x", out.GPR[1])
 		}
 	}
 }
@@ -301,5 +314,190 @@ func TestExecuteCaptureStackArgs(t *testing.T) {
 		t.Fatalf("stack args = [0x%x 0x%x 0x%x 0x%x], want [0x%x 0x%x 0x%x 0x%x]",
 			out.Stack[0], out.Stack[1], out.Stack[2], out.Stack[3],
 			values[7], values[8], values[9], values[10])
+	}
+}
+
+func TestExecuteCaptureStackFloat64Args(t *testing.T) {
+	values := []float64{
+		0.0,
+		-0.0,
+		1.0,
+		-1.0,
+		3.5,
+		-4.25,
+		math.Float64frombits(0x7FEFFFFFFFFFFFFF),
+		math.Float64frombits(0x0010000000000000),
+		math.Float64frombits(0x400921FB54442D18),
+	}
+
+	argTypes := make([]*types.TypeDescriptor, 0, len(values))
+	args := make([]unsafe.Pointer, 0, len(values))
+	for i := range values {
+		argTypes = append(argTypes, types.DoubleTypeDescriptor)
+		args = append(args, unsafe.Pointer(&values[i]))
+	}
+
+	out := captureStackCall(t, argTypes, args)
+
+	for i := 0; i < 8; i++ {
+		if out.FPR[i] != math.Float64bits(values[i]) {
+			t.Fatalf("FPR[%d] = 0x%x, want 0x%x", i, out.FPR[i], math.Float64bits(values[i]))
+		}
+	}
+	if out.Stack[0] != uintptr(math.Float64bits(values[8])) {
+		t.Fatalf("stack float arg = 0x%x, want 0x%x", out.Stack[0], math.Float64bits(values[8]))
+	}
+}
+
+func TestExecuteCaptureStackFloat32Args(t *testing.T) {
+	values := []float32{
+		0.0,
+		-0.0,
+		1.0,
+		-1.0,
+		3.5,
+		-4.25,
+		math.Float32frombits(0x7F7FFFFF),
+		math.Float32frombits(0x00800000),
+		math.Float32frombits(0x40490FDB),
+	}
+
+	argTypes := make([]*types.TypeDescriptor, 0, len(values))
+	args := make([]unsafe.Pointer, 0, len(values))
+	for i := range values {
+		argTypes = append(argTypes, types.FloatTypeDescriptor)
+		args = append(args, unsafe.Pointer(&values[i]))
+	}
+
+	out := captureStackCall(t, argTypes, args)
+
+	for i := 0; i < 8; i++ {
+		want := uint64(math.Float32bits(values[i]))
+		if out.FPR[i] != want {
+			t.Fatalf("FPR[%d] = 0x%x, want 0x%x", i, out.FPR[i], want)
+		}
+	}
+	want := uintptr(math.Float32bits(values[8]))
+	if out.Stack[0] != want {
+		t.Fatalf("stack float arg = 0x%x, want 0x%x", out.Stack[0], want)
+	}
+}
+
+func TestExecuteReturnFloat32(t *testing.T) {
+	values := []uint32{
+		0x00000000,
+		0x80000000,
+		0x3F800000,
+		0xBF800000,
+		0x7F7FFFFF,
+		0x7FC00001,
+	}
+
+	if returnFloat32ABI0 == 0 {
+		t.Fatal("returnFloat32ABI0 pointer is nil")
+	}
+
+	for _, bits := range values {
+		in := math.Float32frombits(bits)
+		var out float32
+		cif := &types.CallInterface{
+			ArgCount:   1,
+			ArgTypes:   []*types.TypeDescriptor{types.FloatTypeDescriptor},
+			ReturnType: types.FloatTypeDescriptor,
+		}
+		prepareReturnCIF(cif)
+
+		var impl Implementation
+		if err := impl.Execute(cif, unsafe.Pointer(returnFloat32ABI0), unsafe.Pointer(&out), []unsafe.Pointer{unsafe.Pointer(&in)}); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+		if math.Float32bits(out) != bits {
+			t.Fatalf("return float32 = 0x%x, want 0x%x", math.Float32bits(out), bits)
+		}
+	}
+}
+
+func TestExecuteReturnFloat64(t *testing.T) {
+	values := []uint64{
+		0x0000000000000000,
+		0x8000000000000000,
+		0x3FF0000000000000,
+		0xBFF0000000000000,
+		0x7FEFFFFFFFFFFFFF,
+		0x7FF8000000000001,
+	}
+
+	if returnFloat64ABI0 == 0 {
+		t.Fatal("returnFloat64ABI0 pointer is nil")
+	}
+
+	for _, bits := range values {
+		in := math.Float64frombits(bits)
+		var out float64
+		cif := &types.CallInterface{
+			ArgCount:   1,
+			ArgTypes:   []*types.TypeDescriptor{types.DoubleTypeDescriptor},
+			ReturnType: types.DoubleTypeDescriptor,
+		}
+		prepareReturnCIF(cif)
+
+		var impl Implementation
+		if err := impl.Execute(cif, unsafe.Pointer(returnFloat64ABI0), unsafe.Pointer(&out), []unsafe.Pointer{unsafe.Pointer(&in)}); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+		if math.Float64bits(out) != bits {
+			t.Fatalf("return float64 = 0x%x, want 0x%x", math.Float64bits(out), bits)
+		}
+	}
+}
+
+func TestExecuteReturnHFA(t *testing.T) {
+	type Vec4 struct {
+		A float64
+		B float64
+		C float64
+		D float64
+	}
+
+	desc := &types.TypeDescriptor{
+		Kind:      types.StructType,
+		Alignment: 8,
+		Members: []*types.TypeDescriptor{
+			types.DoubleTypeDescriptor,
+			types.DoubleTypeDescriptor,
+			types.DoubleTypeDescriptor,
+			types.DoubleTypeDescriptor,
+		},
+	}
+
+	if returnVec4ABI0 == 0 {
+		t.Fatal("returnVec4ABI0 pointer is nil")
+	}
+
+	patterns := []Vec4{
+		{A: 1.0, B: 2.0, C: 3.0, D: 4.0},
+		{A: -1.0, B: -2.0, C: 0.5, D: 0.25},
+		{A: math.Float64frombits(0x7FEFFFFFFFFFFFFF), B: 0, C: -0, D: 1},
+	}
+
+	for _, val := range patterns {
+		var out Vec4
+		cif := &types.CallInterface{
+			ArgCount:   1,
+			ArgTypes:   []*types.TypeDescriptor{desc},
+			ReturnType: desc,
+		}
+		prepareReturnCIF(cif)
+
+		var impl Implementation
+		if err := impl.Execute(cif, unsafe.Pointer(returnVec4ABI0), unsafe.Pointer(&out), []unsafe.Pointer{unsafe.Pointer(&val)}); err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+		if math.Float64bits(out.A) != math.Float64bits(val.A) ||
+			math.Float64bits(out.B) != math.Float64bits(val.B) ||
+			math.Float64bits(out.C) != math.Float64bits(val.C) ||
+			math.Float64bits(out.D) != math.Float64bits(val.D) {
+			t.Fatalf("HFA return mismatch: got %+v want %+v", out, val)
+		}
 	}
 }

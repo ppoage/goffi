@@ -7,6 +7,7 @@ package arm64
 
 import (
 	"math"
+	"runtime"
 	"unsafe"
 
 	gosyscall "github.com/go-webgpu/goffi/internal/syscall"
@@ -213,6 +214,8 @@ func (i *Implementation) Execute(
 		return addStack(v)
 	}
 
+	var keepAlive []any
+
 	// Map arguments to registers
 	for idx, argType := range cif.ArgTypes {
 		if idx >= len(avalue) {
@@ -303,8 +306,23 @@ func (i *Implementation) Execute(
 				return types.ErrTooManyArguments
 			}
 
-			// Fallback: pass by reference.
-			if !addInt(uint64(uintptr(avalue[idx]))) {
+			// Non-HFA >16 bytes: pass by reference (pointer in GPR/stack).
+			size := argType.Size
+			align := argType.Alignment
+			if align == 0 {
+				align = 1
+			}
+			buf := make([]byte, int(size+align-1))
+			base := uintptr(unsafe.Pointer(&buf[0]))
+			aligned := (base + align - 1) &^ (align - 1)
+			dst := unsafe.Slice((*byte)(unsafe.Pointer(aligned)), int(size))
+			src := unsafe.Slice((*byte)(avalue[idx]), int(size))
+			copy(dst, src)
+			if keepAlive == nil {
+				keepAlive = make([]any, 0, 4)
+			}
+			keepAlive = append(keepAlive, buf)
+			if !addInt(uint64(aligned)) {
 				return types.ErrTooManyArguments
 			}
 		default:
@@ -326,5 +344,9 @@ func (i *Implementation) Execute(
 	ret1, ret2, fret := gosyscall.Call15Float(uintptr(fn), gpr, fpr, r8)
 
 	// Handle return value based on type
-	return i.handleReturn(cif, rvalue, uint64(ret1), uint64(ret2), fret)
+	err := i.handleReturn(cif, rvalue, uint64(ret1), uint64(ret2), fret)
+	if keepAlive != nil {
+		runtime.KeepAlive(keepAlive)
+	}
+	return err
 }
